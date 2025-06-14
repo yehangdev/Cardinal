@@ -1,14 +1,18 @@
 package cardinal
 
 import (
+	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gopkg.in/yaml.v3"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Duration accepts Go duration strings and bare numbers in configuration files.
@@ -167,6 +171,25 @@ func DefaultConfig() Config {
 	}
 }
 
+// LoadConfig loads a YAML or JSON configuration file over the defaults.
+func LoadConfig(path string) (Config, error) {
+	config := DefaultConfig()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("read config %q: %w", path, err)
+	}
+
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&config); err != nil {
+		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
+	}
+	if err := config.Validate(); err != nil {
+		return Config{}, err
+	}
+	return config, nil
+}
+
 // Validate checks mode-specific settings and authentication consistency.
 func (c Config) Validate() error {
 	c.Mode = strings.ToLower(strings.TrimSpace(c.Mode))
@@ -206,4 +229,54 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unsupported mode %q", c.Mode)
 	}
 	return nil
+}
+
+// BuildTLSConfig loads certificates and returns a Redis TLS configuration.
+func BuildTLSConfig(config TLSConfig) (*tls.Config, error) {
+	if !config.Enabled {
+		return nil, nil
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         config.ServerName,
+		InsecureSkipVerify: config.InsecureSkipVerify, //nolint:gosec // Explicit opt-in.
+	}
+
+	if config.CAFile != "" {
+		pemData, err := os.ReadFile(config.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read tls ca_file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemData) {
+			return nil, fmt.Errorf("tls ca_file %q contains no certificates", config.CAFile)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	if config.CertFile != "" {
+		certificate, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load tls client certificate: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{certificate}
+	}
+
+	return tlsConfig, nil
+}
+
+// Redacted returns a copy safe for diagnostic output.
+func (c Config) Redacted() Config {
+	result := c
+	if result.Password != "" {
+		result.Password = "<redacted>"
+	}
+	if result.Sentinel.Password != "" {
+		result.Sentinel.Password = "<redacted>"
+	}
+	if result.Sentinel.SentinelPassword != "" {
+		result.Sentinel.SentinelPassword = "<redacted>"
+	}
+	return result
 }
