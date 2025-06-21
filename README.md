@@ -3,12 +3,12 @@
 `Cardinal` 是一个 Redis 命令行诊断工具，用于检查连接、查看键、遍历键空间、
 测量命令延迟，以及对比缓存旁路行为。
 
-当前版本：`v0.1.0-dev`。
+当前版本：`v0.1.0`。
 
 ## 功能
 
 - 单机 Redis 连接
-- PING 健康检查
+- PING、GET、SET 和 TTL
 - 文本、JSON 和 Prometheus 输出
 
 ## 构建

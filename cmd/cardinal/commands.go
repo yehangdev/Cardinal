@@ -117,6 +117,115 @@ func runPing(ctx context.Context, client redis.UniversalClient, config cardinal.
 	}
 }
 
+func runGet(ctx context.Context, client redis.UniversalClient, format cardinal.OutputFormat, args []string, writer io.Writer) error {
+	if len(args) != 1 {
+		return cardinal.NewUsageError("get requires KEY")
+	}
+
+	value, err := client.Get(ctx, args[0]).Result()
+	if err != nil {
+		return err
+	}
+	switch format {
+	case cardinal.FormatJSON:
+		return cardinal.WriteJSON(writer, map[string]interface{}{
+			"ok":    true,
+			"key":   args[0],
+			"value": value,
+		})
+	case cardinal.FormatPrometheus:
+		return cardinal.WritePrometheus(writer, []cardinal.Metric{
+			labeledGauge("cardinal_get_hit", "Whether GET found a value.", 1, map[string]string{"key": args[0]}),
+			labeledGauge("cardinal_get_value_bytes", "Size of the value returned by GET.", float64(len(value)), map[string]string{"key": args[0]}),
+		})
+	default:
+		_, err := fmt.Fprintln(writer, value)
+		return err
+	}
+}
+
+func runSet(ctx context.Context, client redis.UniversalClient, format cardinal.OutputFormat, args []string, writer io.Writer) error {
+	if len(args) < 2 || len(args) > 3 {
+		return cardinal.NewUsageError("set requires KEY VALUE [TTL]")
+	}
+
+	var ttl time.Duration
+	if len(args) == 3 {
+		parsed, err := cardinal.ParseDuration(args[2])
+		if err != nil {
+			return cardinal.NewUsageError("parse TTL: %v", err)
+		}
+		ttl = parsed
+	}
+
+	value, err := client.Set(ctx, args[0], args[1], ttl).Result()
+	if err != nil {
+		return err
+	}
+	switch format {
+	case cardinal.FormatJSON:
+		return cardinal.WriteJSON(writer, map[string]interface{}{
+			"ok":         true,
+			"key":        args[0],
+			"result":     value,
+			"ttl_ns":     ttl,
+			"value_size": len(args[1]),
+		})
+	case cardinal.FormatPrometheus:
+		return cardinal.WritePrometheus(writer, []cardinal.Metric{
+			counter("cardinal_set_total", "Number of successful SET commands.", 1),
+			labeledGauge("cardinal_set_ttl_seconds", "TTL supplied to the SET command.", ttl.Seconds(), map[string]string{"key": args[0]}),
+		})
+	default:
+		if ttl > 0 {
+			_, err := fmt.Fprintf(writer, "%s ttl=%s\n", value, ttl)
+			return err
+		}
+		_, err := fmt.Fprintln(writer, value)
+		return err
+	}
+}
+
+func runTTL(ctx context.Context, client redis.UniversalClient, format cardinal.OutputFormat, args []string, writer io.Writer) error {
+	if len(args) != 1 {
+		return cardinal.NewUsageError("ttl requires KEY")
+	}
+
+	ttl, err := client.TTL(ctx, args[0]).Result()
+	if err != nil {
+		return err
+	}
+
+	status := "expiring"
+	switch ttl {
+	case -2 * time.Second:
+		status = "missing"
+	case -1 * time.Second:
+		status = "persistent"
+	}
+	switch format {
+	case cardinal.FormatJSON:
+		return cardinal.WriteJSON(writer, map[string]interface{}{
+			"ok":     status != "missing",
+			"key":    args[0],
+			"status": status,
+			"ttl_ns": ttl,
+		})
+	case cardinal.FormatPrometheus:
+		value := ttl.Seconds()
+		if value < 0 {
+			value = 0
+		}
+		return cardinal.WritePrometheus(writer, []cardinal.Metric{
+			labeledGauge("cardinal_ttl_seconds", "Remaining key TTL. Missing and persistent keys report zero.", value,
+				map[string]string{"key": args[0], "status": status}),
+		})
+	default:
+		_, err := fmt.Fprintln(writer, status)
+		return err
+	}
+}
+
 func usageErrorFromFlag(command string, err error) error {
 	if errors.Is(err, flag.ErrHelp) {
 		return cardinal.NewUsageError("%s: help requested", command)
@@ -179,6 +288,12 @@ func runCommand(ctx context.Context, client redis.UniversalClient, config cardin
 	switch args[0] {
 	case "ping":
 		return runPing(ctx, client, config, format, args[1:], writer)
+	case "get":
+		return runGet(ctx, client, format, args[1:], writer)
+	case "set":
+		return runSet(ctx, client, format, args[1:], writer)
+	case "ttl":
+		return runTTL(ctx, client, format, args[1:], writer)
 	default:
 		return cardinal.NewUsageError("unknown command %q", args[0])
 	}
