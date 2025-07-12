@@ -226,6 +226,74 @@ func runTTL(ctx context.Context, client redis.UniversalClient, format cardinal.O
 	}
 }
 
+func runScan(ctx context.Context, client redis.UniversalClient, format cardinal.OutputFormat, args []string, writer io.Writer) error {
+	flags := flag.NewFlagSet("scan", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	count := flags.Int64("count", 100, "SCAN count hint")
+	cursor := flags.Uint64("cursor", 0, "starting cursor")
+	maxIterations := flags.Int("max-iterations", 0, "maximum SCAN calls")
+	limit := flags.Int("limit", 0, "soft key limit")
+	if err := flags.Parse(args); err != nil {
+		return usageErrorFromFlag("scan", err)
+	}
+	if flags.NArg() != 1 {
+		return cardinal.NewUsageError("scan requires PREFIX")
+	}
+
+	report, err := cardinal.Scan(ctx, client, cardinal.ScanOptions{
+		Pattern:       flags.Arg(0),
+		Count:         *count,
+		Cursor:        *cursor,
+		MaxIterations: *maxIterations,
+		Limit:         *limit,
+	})
+	if err != nil {
+		return err
+	}
+
+	switch format {
+	case cardinal.FormatJSON:
+		return cardinal.WriteJSON(writer, report)
+	case cardinal.FormatPrometheus:
+		complete := 0.0
+		if report.Complete {
+			complete = 1
+		}
+		return cardinal.WritePrometheus(writer, []cardinal.Metric{
+			labeledGauge("cardinal_scan_keys", "Number of keys returned by SCAN.", float64(len(report.Keys)), map[string]string{"pattern": report.Pattern}),
+			labeledCounter("cardinal_scan_iterations", "Number of SCAN cursor transitions.", float64(len(report.Iterations)), map[string]string{"pattern": report.Pattern}),
+			labeledGauge("cardinal_scan_duration_seconds", "Elapsed time for the SCAN session.", report.Duration.Seconds(), map[string]string{"pattern": report.Pattern}),
+			labeledGauge("cardinal_scan_next_cursor", "Cursor to resume a truncated SCAN.", float64(report.NextCursor), map[string]string{"pattern": report.Pattern}),
+			labeledGauge("cardinal_scan_complete", "Whether the SCAN reached cursor zero.", complete, map[string]string{"pattern": report.Pattern}),
+		})
+	default:
+		for _, iteration := range report.Iterations {
+			if _, err := fmt.Fprintf(writer,
+				"cursor=%d next_cursor=%d keys=%d duration=%s\n",
+				iteration.StartCursor,
+				iteration.NextCursor,
+				len(iteration.Keys),
+				iteration.Duration,
+			); err != nil {
+				return err
+			}
+		}
+		for _, key := range report.Keys {
+			if _, err := fmt.Fprintln(writer, key); err != nil {
+				return err
+			}
+		}
+		_, err := fmt.Fprintf(writer,
+			"count=%d complete=%t next_cursor=%d duration=%s\n",
+			len(report.Keys),
+			report.Complete,
+			report.NextCursor,
+			report.Duration,
+		)
+		return err
+	}
+}
+
 func usageErrorFromFlag(command string, err error) error {
 	if errors.Is(err, flag.ErrHelp) {
 		return cardinal.NewUsageError("%s: help requested", command)
@@ -294,6 +362,8 @@ func runCommand(ctx context.Context, client redis.UniversalClient, config cardin
 		return runSet(ctx, client, format, args[1:], writer)
 	case "ttl":
 		return runTTL(ctx, client, format, args[1:], writer)
+	case "scan":
+		return runScan(ctx, client, format, args[1:], writer)
 	default:
 		return cardinal.NewUsageError("unknown command %q", args[0])
 	}
