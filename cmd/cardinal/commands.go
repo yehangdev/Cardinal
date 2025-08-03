@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/redis/go-redis/v9"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -294,6 +295,55 @@ func runScan(ctx context.Context, client redis.UniversalClient, format cardinal.
 	}
 }
 
+func runLatency(ctx context.Context, client redis.UniversalClient, format cardinal.OutputFormat, args []string, writer io.Writer) error {
+	flags := flag.NewFlagSet("latency", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	count := flags.Int("count", 100, "number of samples")
+	pipeline := flags.Bool("pipeline", false, "use pipeline batches")
+	batchSize := flags.Int("batch-size", 100, "commands per pipeline batch")
+	if err := flags.Parse(args); err != nil {
+		return usageErrorFromFlag("latency", err)
+	}
+	if flags.NArg() == 0 {
+		return cardinal.NewUsageError("latency requires COMMAND [ARGS...]")
+	}
+
+	command := flags.Args()
+	report, err := cardinal.MeasureWithOptions(ctx, client, command, cardinal.MeasureOptions{
+		Count:     *count,
+		Pipeline:  *pipeline,
+		BatchSize: *batchSize,
+	})
+	if err != nil {
+		return err
+	}
+
+	switch format {
+	case cardinal.FormatJSON:
+		return cardinal.WriteJSON(writer, latencyJSON(report))
+	case cardinal.FormatPrometheus:
+		return writeLatencyPrometheus(writer, report)
+	default:
+		_, err := fmt.Fprintf(writer,
+			"command=%s mode=%s count=%d min=%s p50=%s p90=%s p95=%s p99=%s max=%s avg=%s stddev=%s throughput=%.2f/s duration=%s\n",
+			strings.ToUpper(report.Command),
+			report.Mode,
+			report.Stats.Count,
+			report.Stats.Min,
+			report.Stats.P50,
+			report.Stats.P90,
+			report.Stats.P95,
+			report.Stats.P99,
+			report.Stats.Max,
+			report.Stats.Avg,
+			report.Stats.StdDev,
+			report.Throughput,
+			report.Duration,
+		)
+		return err
+	}
+}
+
 func usageErrorFromFlag(command string, err error) error {
 	if errors.Is(err, flag.ErrHelp) {
 		return cardinal.NewUsageError("%s: help requested", command)
@@ -321,6 +371,66 @@ type latencyReportJSON struct {
 type histogramBucketJSON struct {
 	UpperBoundMS float64 `json:"upper_bound_ms"`
 	Count        uint64  `json:"count"`
+}
+
+func latencyJSON(report cardinal.LatencyReport) latencyReportJSON {
+	result := latencyReportJSON{
+		Command:    strings.ToUpper(report.Command),
+		Mode:       report.Mode,
+		Count:      report.Stats.Count,
+		DurationMS: milliseconds(report.Duration),
+		Throughput: report.Throughput,
+		MinMS:      milliseconds(report.Stats.Min),
+		P50MS:      milliseconds(report.Stats.P50),
+		P90MS:      milliseconds(report.Stats.P90),
+		P95MS:      milliseconds(report.Stats.P95),
+		P99MS:      milliseconds(report.Stats.P99),
+		MaxMS:      milliseconds(report.Stats.Max),
+		AverageMS:  milliseconds(report.Stats.Avg),
+		StdDevMS:   milliseconds(report.Stats.StdDev),
+	}
+	for _, bucket := range report.Histogram.Buckets {
+		result.Histogram = append(result.Histogram, histogramBucketJSON{
+			UpperBoundMS: milliseconds(bucket.UpperBound),
+			Count:        bucket.Count,
+		})
+	}
+	return result
+}
+
+func writeLatencyPrometheus(writer io.Writer, report cardinal.LatencyReport) error {
+	labels := map[string]string{
+		"command": strings.ToUpper(report.Command),
+		"mode":    report.Mode,
+	}
+	metrics := []cardinal.Metric{
+		labeledCounter("cardinal_latency_commands_total", "Number of measured commands.", float64(report.Stats.Count), labels),
+	}
+
+	quantiles := []struct {
+		name  string
+		value time.Duration
+	}{
+		{name: "min", value: report.Stats.Min},
+		{name: "p50", value: report.Stats.P50},
+		{name: "p90", value: report.Stats.P90},
+		{name: "p95", value: report.Stats.P95},
+		{name: "p99", value: report.Stats.P99},
+		{name: "max", value: report.Stats.Max},
+		{name: "avg", value: report.Stats.Avg},
+	}
+	for _, quantile := range quantiles {
+		metrics = append(metrics, labeledGauge("cardinal_latency_seconds",
+			"Summary percentiles for command latency.",
+			quantile.value.Seconds(),
+			mergeLabels(labels, "quantile", quantile.name)))
+	}
+	metrics = append(metrics, labeledGauge("cardinal_latency_throughput_operations_per_second",
+		"Measured command throughput.", report.Throughput, labels))
+	metrics = append(metrics,
+		report.Histogram.Metrics("cardinal_latency_histogram_seconds",
+			"Histogram of measured command latency.", labels)...)
+	return cardinal.WritePrometheus(writer, metrics)
 }
 
 func milliseconds(duration time.Duration) float64 {
@@ -364,6 +474,8 @@ func runCommand(ctx context.Context, client redis.UniversalClient, config cardin
 		return runTTL(ctx, client, format, args[1:], writer)
 	case "scan":
 		return runScan(ctx, client, format, args[1:], writer)
+	case "latency":
+		return runLatency(ctx, client, format, args[1:], writer)
 	default:
 		return cardinal.NewUsageError("unknown command %q", args[0])
 	}
