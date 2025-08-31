@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/redis/go-redis/v9"
 	"io"
+	"sort"
 	"strings"
 	"time"
 )
@@ -344,6 +345,69 @@ func runLatency(ctx context.Context, client redis.UniversalClient, format cardin
 	}
 }
 
+func runPipeline(ctx context.Context, client redis.UniversalClient, format cardinal.OutputFormat, args []string, writer io.Writer) error {
+	flags := flag.NewFlagSet("pipeline", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	value := flags.String("value", "", "value for SET operations")
+	ttl := flags.String("ttl", "0s", "TTL for SET or EXPIRE operations")
+	repeat := flags.Int("repeat", 1, "repeat the key list")
+	if err := flags.Parse(args); err != nil {
+		return usageErrorFromFlag("pipeline", err)
+	}
+	if flags.NArg() < 2 {
+		return cardinal.NewUsageError("pipeline requires OP KEY [KEY...]")
+	}
+
+	parsedTTL, err := cardinal.ParseDuration(*ttl)
+	if err != nil {
+		return durationFlagError("ttl", err)
+	}
+	operations, err := cardinal.RepeatPipelineOperations(
+		flags.Arg(0),
+		flags.Args()[1:],
+		*value,
+		parsedTTL,
+		*repeat,
+	)
+	if err != nil {
+		return cardinal.NewUsageError("%v", err)
+	}
+
+	report, err := cardinal.ExecutePipeline(ctx, client, operations)
+	if err != nil {
+		return err
+	}
+	switch format {
+	case cardinal.FormatJSON:
+		return cardinal.WriteJSON(writer, pipelineJSON(report))
+	case cardinal.FormatPrometheus:
+		return writePipelinePrometheus(writer, report)
+	default:
+		for _, result := range report.Operations {
+			if result.Error != "" {
+				if _, err := fmt.Fprintf(writer, "index=%d command=%s key=%s status=%s error=%s\n",
+					result.Index, result.Command, result.Key, result.Status, result.Error); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := fmt.Fprintf(writer, "index=%d command=%s key=%s status=%s value=%v\n",
+				result.Index, result.Command, result.Key, result.Status, result.Value); err != nil {
+				return err
+			}
+		}
+		_, err := fmt.Fprintf(writer,
+			"count=%d succeeded=%d misses=%d failed=%d duration=%s\n",
+			len(report.Operations),
+			report.Succeeded,
+			report.Misses,
+			report.Failed,
+			report.Duration,
+		)
+		return err
+	}
+}
+
 func usageErrorFromFlag(command string, err error) error {
 	if errors.Is(err, flag.ErrHelp) {
 		return cardinal.NewUsageError("%s: help requested", command)
@@ -433,6 +497,58 @@ func writeLatencyPrometheus(writer io.Writer, report cardinal.LatencyReport) err
 	return cardinal.WritePrometheus(writer, metrics)
 }
 
+func pipelineJSON(report cardinal.PipelineReport) map[string]interface{} {
+	operations := make([]map[string]interface{}, 0, len(report.Operations))
+	for _, result := range report.Operations {
+		operations = append(operations, map[string]interface{}{
+			"index":       result.Index,
+			"command":     result.Command,
+			"key":         result.Key,
+			"status":      result.Status,
+			"value":       result.Value,
+			"error":       result.Error,
+			"duration_ns": result.Duration,
+		})
+	}
+	return map[string]interface{}{
+		"ok":          report.Failed == 0,
+		"count":       len(report.Operations),
+		"succeeded":   report.Succeeded,
+		"misses":      report.Misses,
+		"failed":      report.Failed,
+		"duration_ns": report.Duration,
+		"operations":  operations,
+	}
+}
+
+func writePipelinePrometheus(writer io.Writer, report cardinal.PipelineReport) error {
+	counts := make(map[string]int)
+	for _, result := range report.Operations {
+		key := result.Command + "\x00" + result.Status
+		counts[key]++
+	}
+
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	metrics := make([]cardinal.Metric, 0, len(keys)+2)
+	for _, key := range keys {
+		parts := strings.SplitN(key, "\x00", 2)
+		metrics = append(metrics, labeledCounter("cardinal_pipeline_operations_total",
+			"Pipeline command results by command and status.",
+			float64(counts[key]),
+			map[string]string{"command": parts[0], "status": parts[1]}))
+	}
+	metrics = append(metrics,
+		gauge("cardinal_pipeline_duration_seconds", "Elapsed time for the pipeline round trip.", report.Duration.Seconds()),
+		gauge("cardinal_pipeline_failed", "Number of failed pipeline operations.", float64(report.Failed)),
+	)
+	return cardinal.WritePrometheus(writer, metrics)
+}
+
 func milliseconds(duration time.Duration) float64 {
 	return float64(duration) / float64(time.Millisecond)
 }
@@ -476,6 +592,8 @@ func runCommand(ctx context.Context, client redis.UniversalClient, config cardin
 		return runScan(ctx, client, format, args[1:], writer)
 	case "latency":
 		return runLatency(ctx, client, format, args[1:], writer)
+	case "pipeline":
+		return runPipeline(ctx, client, format, args[1:], writer)
 	default:
 		return cardinal.NewUsageError("unknown command %q", args[0])
 	}
