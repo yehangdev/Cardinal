@@ -408,6 +408,77 @@ func runPipeline(ctx context.Context, client redis.UniversalClient, format cardi
 	}
 }
 
+func runCacheAside(ctx context.Context, client redis.UniversalClient, format cardinal.OutputFormat, args []string, writer io.Writer) error {
+	flags := flag.NewFlagSet("cache-aside", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	ttl := flags.String("ttl", "1m", "cache fill TTL")
+	originDelay := flags.String("origin-delay", "25ms", "simulated origin latency")
+	value := flags.String("value", "", "origin value; generated when empty")
+	if err := flags.Parse(args); err != nil {
+		return usageErrorFromFlag("cache-aside", err)
+	}
+	if flags.NArg() != 1 {
+		return cardinal.NewUsageError("cache-aside requires KEY")
+	}
+
+	parsedTTL, err := cardinal.ParseDuration(*ttl)
+	if err != nil {
+		return durationFlagError("ttl", err)
+	}
+	parsedDelay, err := cardinal.ParseDuration(*originDelay)
+	if err != nil {
+		return durationFlagError("origin-delay", err)
+	}
+
+	key := flags.Arg(0)
+	origin := func() string {
+		if *value != "" {
+			return *value
+		}
+		return fmt.Sprintf("%s:%d", key, time.Now().UnixNano())
+	}
+
+	result, err := cardinal.CompareCacheAside(
+		ctx,
+		cardinal.NewRedisStore(client),
+		key,
+		parsedTTL,
+		parsedDelay,
+		origin,
+	)
+	if err != nil {
+		return err
+	}
+
+	switch format {
+	case cardinal.FormatJSON:
+		return cardinal.WriteJSON(writer, cacheAsideJSON(result))
+	case cardinal.FormatPrometheus:
+		return writeCacheAsidePrometheus(writer, result)
+	default:
+		if result.CacheHit {
+			_, err := fmt.Fprintf(writer,
+				"result=hit\nvalue=%s\ncache_lookup=%s\ntotal=%s\norigin=skipped\n",
+				result.Value,
+				result.CacheLookup,
+				result.Total(),
+			)
+			return err
+		}
+		_, err := fmt.Fprintf(writer,
+			"result=miss\ncache_lookup=%s\norigin_fetch=%s\nfill=%s\nfollow_up_hit=%s\norigin_saved=%s\ntotal=%s\nvalue=%s\n",
+			result.CacheLookup,
+			result.OriginFetch,
+			result.Fill,
+			result.HitLookup,
+			result.OriginSaved(),
+			result.Total(),
+			result.Value,
+		)
+		return err
+	}
+}
+
 func usageErrorFromFlag(command string, err error) error {
 	if errors.Is(err, flag.ErrHelp) {
 		return cardinal.NewUsageError("%s: help requested", command)
@@ -549,6 +620,41 @@ func writePipelinePrometheus(writer io.Writer, report cardinal.PipelineReport) e
 	return cardinal.WritePrometheus(writer, metrics)
 }
 
+func cacheAsideJSON(result cardinal.CacheAsideResult) map[string]interface{} {
+	resultName := "miss"
+	if result.CacheHit {
+		resultName = "hit"
+	}
+	return map[string]interface{}{
+		"ok":               true,
+		"result":           resultName,
+		"cache_hit":        result.CacheHit,
+		"value":            result.Value,
+		"cache_lookup_ms":  milliseconds(result.CacheLookup),
+		"origin_fetch_ms":  milliseconds(result.OriginFetch),
+		"fill_ms":          milliseconds(result.Fill),
+		"follow_up_hit_ms": milliseconds(result.HitLookup),
+		"origin_saved_ms":  milliseconds(result.OriginSaved()),
+		"total_ms":         milliseconds(result.Total()),
+	}
+}
+
+func writeCacheAsidePrometheus(writer io.Writer, result cardinal.CacheAsideResult) error {
+	resultName := "miss"
+	if result.CacheHit {
+		resultName = "hit"
+	}
+	labels := map[string]string{"result": resultName}
+	return cardinal.WritePrometheus(writer, []cardinal.Metric{
+		labeledGauge("cardinal_cache_aside_lookup_seconds", "Initial cache lookup duration.", result.CacheLookup.Seconds(), labels),
+		labeledGauge("cardinal_cache_aside_origin_seconds", "Simulated origin fetch duration.", result.OriginFetch.Seconds(), labels),
+		labeledGauge("cardinal_cache_aside_fill_seconds", "Cache fill duration after a miss.", result.Fill.Seconds(), labels),
+		labeledGauge("cardinal_cache_aside_follow_up_hit_seconds", "Follow-up cache hit duration after a fill.", result.HitLookup.Seconds(), labels),
+		labeledGauge("cardinal_cache_aside_origin_saved_seconds", "Origin time avoided by a follow-up cache hit.", result.OriginSaved().Seconds(), labels),
+		labeledGauge("cardinal_cache_aside_total_seconds", "Total duration of the comparison sequence.", result.Total().Seconds(), labels),
+	})
+}
+
 func milliseconds(duration time.Duration) float64 {
 	return float64(duration) / float64(time.Millisecond)
 }
@@ -594,6 +700,8 @@ func runCommand(ctx context.Context, client redis.UniversalClient, config cardin
 		return runLatency(ctx, client, format, args[1:], writer)
 	case "pipeline":
 		return runPipeline(ctx, client, format, args[1:], writer)
+	case "cache-aside":
+		return runCacheAside(ctx, client, format, args[1:], writer)
 	default:
 		return cardinal.NewUsageError("unknown command %q", args[0])
 	}
