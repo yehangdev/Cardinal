@@ -1,0 +1,15 @@
+mode: standalone
+address: 127.0.0.1:6379
+db: 0
+timeout: 5s
+
+username: ""
+password: ""
+
+tls:
+  enabled: false
+  ca_file: ""
+  cert_file: ""
+  key_file: ""
+  server_name: ""
+  insecure_skip_verify: false

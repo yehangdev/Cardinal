@@ -1,0 +1,17 @@
+mode: sentinel
+timeout: 5s
+
+sentinel:
+  master_name: primary
+  addresses:
+    - sentinel-a.example.net:26379
+    - sentinel-b.example.net:26379
+    - sentinel-c.example.net:26379
+  username: app
+  password: change-me
+  sentinel_username: ""
+  sentinel_password: ""
+  db: 0
+
+tls:
+  enabled: false
