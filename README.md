@@ -7,7 +7,8 @@
 
 ## 功能
 
-- 单机、Unix Socket 和 Sentinel 连接
+- 单机、Unix Socket、Sentinel 和 Cluster
+- TLS 和 ACL 认证
 - SCAN、延迟、流水线和缓存旁路诊断
 
 ## 构建

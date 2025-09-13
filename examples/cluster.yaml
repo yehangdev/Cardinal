@@ -1,0 +1,18 @@
+mode: cluster
+timeout: 3s
+
+username: app
+password: change-me
+
+cluster:
+  addresses:
+    - node-a.example.net:6379
+    - node-b.example.net:6379
+    - node-c.example.net:6379
+  max_redirects: 5
+  route_by_latency: true
+  route_randomly: false
+  read_only: true
+
+tls:
+  enabled: false

@@ -1,0 +1,7 @@
+mode: standalone
+unix_socket: /run/redis/redis.sock
+db: 0
+timeout: 2s
+
+username: probe
+password: change-me

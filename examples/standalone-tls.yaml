@@ -1,0 +1,15 @@
+mode: standalone
+address: redis.internal:6379
+db: 0
+timeout: 3s
+
+username: probe
+password: change-me
+
+tls:
+  enabled: true
+  ca_file: /etc/redis/ca.pem
+  cert_file: /etc/redis/client.pem
+  key_file: /etc/redis/client-key.pem
+  server_name: redis.internal
+  insecure_skip_verify: false
