@@ -7,8 +7,8 @@
 
 ## 功能
 
-- 单机、Unix Socket、Sentinel 和 Cluster
-- TLS 和 ACL 认证
+- 完整连接模式
+- JSON 和 Prometheus 输出
 - SCAN、延迟、流水线和缓存旁路诊断
 
 ## 构建
