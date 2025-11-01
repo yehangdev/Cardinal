@@ -3,14 +3,14 @@
 `Cardinal` 是一个 Redis 命令行诊断工具，用于检查连接、查看键、遍历键空间、
 测量命令延迟，以及对比缓存旁路行为。
 
-当前版本：`v0.3.0-dev`。
+当前版本：`v0.3.0`。
 
 ## 功能
 
-- Sentinel 和 Cluster 连接
-- TLS CA 与客户端证书
-- YAML 和 JSON 配置
-- Prometheus 指标
+- 单机、Unix、Sentinel 和 Cluster
+- TLS 和 ACL 认证
+- 严格 YAML/JSON 配置
+- 运维命令和结构化输出
 
 ## 构建
 
