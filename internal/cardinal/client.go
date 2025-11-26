@@ -42,7 +42,7 @@ func NewConfiguredClient(config Config) (redis.UniversalClient, error) {
 
 	switch config.Mode {
 	case "standalone":
-		return newStandaloneClient(config, tlsConfig, timeout), nil
+		return newStandalone(config, tlsConfig, timeout), nil
 	case "sentinel":
 		return newSentinelClient(config, tlsConfig, timeout), nil
 	case "cluster":
@@ -52,7 +52,7 @@ func NewConfiguredClient(config Config) (redis.UniversalClient, error) {
 	}
 }
 
-func newStandaloneClient(config Config, tlsConfig *tls.Config, timeout time.Duration) *redis.Client {
+func newStandalone(config Config, tlsConfig *tls.Config, timeout time.Duration) *redis.Client {
 	network := "tcp"
 	address := strings.TrimSpace(config.Address)
 	if config.UnixSocket != "" {

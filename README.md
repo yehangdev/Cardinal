@@ -7,10 +7,9 @@
 
 ## 功能
 
-- 单机、Unix、Sentinel 和 Cluster
-- TLS 和 ACL 认证
-- SCAN、延迟、流水线和缓存旁路
-- 文本、JSON 和 Prometheus 输出
+- 连接模式完成
+- 配置校验完成
+- 诊断命令完成
 
 ## 构建
 
