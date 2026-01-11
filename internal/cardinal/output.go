@@ -175,7 +175,7 @@ func validateMetric(metric Metric) error {
 func writeHistogram(writer io.Writer, metric Metric) error {
 	for _, bucket := range metric.Buckets {
 		labels := cloneLabels(metric.Labels)
-		labels["le"] = bucketLabel(bucket.UpperBound)
+		labels["le"] = formatBucket(bucket.UpperBound)
 		if _, err := fmt.Fprintf(writer, "%s_bucket%s %d\n",
 			metric.Name,
 			formatLabels(labels),
@@ -258,7 +258,7 @@ func formatFloat(value float64) string {
 	return strconv.FormatFloat(value, 'g', -1, 64)
 }
 
-func bucketLabel(value time.Duration) string {
+func formatBucket(value time.Duration) string {
 	if value == 0 {
 		return "0"
 	}
