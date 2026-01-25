@@ -1,16 +1,18 @@
 package main
 
 import (
-	"cardinal/internal/cardinal"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/redis/go-redis/v9"
 	"io"
 	"sort"
 	"strings"
 	"time"
+
+	"cardinal/internal/cardinal"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func runCommand(ctx context.Context, client redis.UniversalClient, config cardinal.Config, format cardinal.OutputFormat, args []string, writer io.Writer) error {
@@ -682,27 +684,4 @@ func labeledGauge(name, help string, value float64, labels map[string]string) ca
 
 func labeledCounter(name, help string, value float64, labels map[string]string) cardinal.Metric {
 	return cardinal.Metric{Name: name, Help: help, Type: cardinal.MetricCounter, Labels: labels, Value: value}
-}
-
-func runCommand(ctx context.Context, client redis.UniversalClient, config cardinal.Config, format cardinal.OutputFormat, args []string, writer io.Writer) error {
-	switch args[0] {
-	case "ping":
-		return runPing(ctx, client, config, format, args[1:], writer)
-	case "get":
-		return runGet(ctx, client, format, args[1:], writer)
-	case "set":
-		return runSet(ctx, client, format, args[1:], writer)
-	case "ttl":
-		return runTTL(ctx, client, format, args[1:], writer)
-	case "scan":
-		return runScan(ctx, client, format, args[1:], writer)
-	case "latency":
-		return runLatency(ctx, client, format, args[1:], writer)
-	case "pipeline":
-		return runPipeline(ctx, client, format, args[1:], writer)
-	case "cache-aside":
-		return runCacheAside(ctx, client, format, args[1:], writer)
-	default:
-		return cardinal.NewUsageError("unknown command %q", args[0])
-	}
 }
